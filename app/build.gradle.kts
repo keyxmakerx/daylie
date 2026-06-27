@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -7,12 +9,22 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+// Release signing is read from keystore.properties (git-ignored) or CI env vars.
+// When no keystore is configured, the release build falls back to debug signing so
+// contributors can still build it locally.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+val releaseStorePath: String? =
+    keystoreProps.getProperty("storeFile") ?: System.getenv("KEYSTORE_FILE")
+
 android {
-    namespace = "com.daylie.app"
+    namespace = "com.daymark.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.daylie.app"
+        applicationId = "com.daymark.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -24,13 +36,30 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (releaseStorePath != null) {
+                storeFile = file(releaseStorePath)
+                storePassword = keystoreProps.getProperty("storePassword") ?: System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = keystoreProps.getProperty("keyAlias") ?: System.getenv("KEY_ALIAS")
+                keyPassword = keystoreProps.getProperty("keyPassword") ?: System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = if (releaseStorePath != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {
@@ -48,6 +77,11 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+// Export Room schemas so future migrations can be tested and reviewed.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -78,6 +112,11 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.androidx.biometric)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.lifecycle.process)
+
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.nayuki.qrcodegen)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
