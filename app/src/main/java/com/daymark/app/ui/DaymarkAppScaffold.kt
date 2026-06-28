@@ -25,8 +25,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -56,9 +58,12 @@ import com.daymark.app.ui.entry.EntryEditorScreen
 import com.daymark.app.ui.components.RaisedCenterNavBar
 import com.daymark.app.ui.home.HomeScreen
 import com.daymark.app.ui.insights.InsightsScreen
+import com.daymark.app.ui.insights.ReviewYearScreen
 import com.daymark.app.ui.journal.JournalEditorScreen
 import com.daymark.app.ui.journal.JournalScreen
 import com.daymark.app.ui.more.MoreHubScreen
+import com.daymark.app.stats.Signals
+import com.daymark.app.ui.assessments.Assessments
 import com.daymark.app.ui.navigation.Routes
 import com.daymark.app.ui.navigation.TopLevelDestination
 import com.daymark.app.ui.search.SearchScreen
@@ -75,21 +80,34 @@ import com.daymark.app.ui.support.GentleSupportScreen
 import com.daymark.app.ui.support.SupportScreen
 import com.daymark.app.ui.trackers.TrackerDetailScreen
 import com.daymark.app.ui.trackers.TrackersScreen
+import com.daymark.app.ui.achievements.AchievementsScreen
+import com.daymark.app.ui.activation.BehavioralActivationScreen
+import com.daymark.app.ui.cbt.ThoughtRecordEditorScreen
+import com.daymark.app.ui.cbt.ThoughtRecordListScreen
+import com.daymark.app.ui.movement.MovementHubScreen
+import com.daymark.app.ui.movement.MovementSessionScreen
+import com.daymark.app.ui.assessments.AssessmentScreen
+import com.daymark.app.ui.assessments.AssessmentsHubScreen
+import com.daymark.app.ui.settings.CustomizeMoodsScreen
+import com.daymark.app.ui.settings.RemindersScreen
 import com.daymark.app.ui.settings.SettingsScreen
 import com.daymark.app.ui.stats.StatsScreen
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DaymarkAppScaffold(initialMood: Int = -1) {
+fun DaymarkAppScaffold(initialMood: Int = -1, openEditor: Boolean = false) {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     // From the home-screen widget: jump straight into a new entry with the tapped mood.
-    androidx.compose.runtime.LaunchedEffect(initialMood) {
+    // From a reminder notification (openEditor): open a blank new entry.
+    androidx.compose.runtime.LaunchedEffect(initialMood, openEditor) {
         if (initialMood in 1..5) {
             navController.navigate(Routes.entry(mood = initialMood))
+        } else if (openEditor) {
+            navController.navigate(Routes.entry())
         }
     }
 
@@ -219,6 +237,18 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
             composable(Routes.HOME) {
                 HomeScreen(
                     onEntryClick = { id -> navController.navigate(Routes.entry(id)) },
+                    onSignalAction = { action -> navController.navigate(signalActionRoute(action)) },
+                    onUndoableDelete = { onUndo, onExpire ->
+                        scope.launch {
+                            val result = snackbarHostState.showSnackbar(
+                                message = "Entry deleted",
+                                actionLabel = "Undo",
+                                withDismissAction = true,
+                                duration = SnackbarDuration.Short,
+                            )
+                            if (result == SnackbarResult.ActionPerformed) onUndo() else onExpire()
+                        }
+                    },
                     modifier = Modifier.padding(padding),
                 )
             }
@@ -226,7 +256,17 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
                 InsightsScreen(
                     modifier = Modifier.padding(padding),
                     onDayClick = { date -> navController.navigate(Routes.day(date.toEpochDay())) },
+                    onSignalAction = { action -> navController.navigate(signalActionRoute(action)) },
+                    onReviewYear = { year -> navController.navigate(Routes.reviewYear(year)) },
                 )
+            }
+            composable(
+                Routes.REVIEW_YEAR_PATTERN,
+                arguments = listOf(navArgument("year") { type = NavType.StringType }),
+                enterTransition = sheetEnter,
+                popExitTransition = sheetPopExit,
+            ) {
+                ReviewYearScreen(onDone = { navController.popBackStack() })
             }
             composable(
                 Routes.DAY_PATTERN,
@@ -273,7 +313,10 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
                 enterTransition = sheetEnter,
                 popExitTransition = sheetPopExit,
             ) {
-                JournalEditorScreen(onDone = { navController.popBackStack() })
+                JournalEditorScreen(
+                    onDone = { navController.popBackStack() },
+                    onOpenSupport = { navController.navigate(Routes.CRISIS) },
+                )
             }
             composable(Routes.MORE) {
                 MoreHubScreen(
@@ -283,6 +326,11 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
                     onSleep = { navController.navigate(Routes.SLEEP) },
                     onTrackers = { navController.navigate(Routes.TRACKERS) },
                     onGentleSupport = { navController.navigate(Routes.GENTLE_SUPPORT) },
+                    onCheckins = { navController.navigate(Routes.ASSESSMENTS) },
+                    onAchievements = { navController.navigate(Routes.ACHIEVEMENTS) },
+                    onActivation = { navController.navigate(Routes.ACTIVATION) },
+                    onThoughtRecords = { navController.navigate(Routes.THOUGHT_RECORDS) },
+                    onMovement = { navController.navigate(Routes.MOVEMENT) },
                     onSettings = { navController.navigate(Routes.SETTINGS) },
                     modifier = Modifier.padding(padding),
                 )
@@ -312,6 +360,8 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
                     onClose = { navController.popBackStack() },
                     onTalk = { navController.navigate(Routes.journalEntry()) },
                     onBreathe = { navController.navigate(Routes.SUPPORT_BREATHE) },
+                    onReframe = { navController.navigate(Routes.thoughtRecord()) },
+                    onMove = { navController.navigate(Routes.MOVEMENT) },
                     onCrisis = { navController.navigate(Routes.CRISIS) },
                 )
             }
@@ -352,12 +402,79 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
                     onDone = { navController.popBackStack() },
                 )
             }
+            composable(Routes.ASSESSMENTS, enterTransition = zEnter, popExitTransition = zPopExit) {
+                AssessmentsHubScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpen = { key -> navController.navigate(Routes.assessment(key)) },
+                )
+            }
+            composable(
+                Routes.ASSESSMENT_PATTERN,
+                arguments = listOf(navArgument("assessmentKey") { type = NavType.StringType }),
+                enterTransition = sheetEnter,
+                popExitTransition = sheetPopExit,
+            ) { entry ->
+                AssessmentScreen(
+                    assessmentKey = entry.arguments?.getString("assessmentKey") ?: "",
+                    onDone = { navController.popBackStack() },
+                    onOpenSupport = { navController.navigate(Routes.CRISIS) },
+                )
+            }
             composable(Routes.SETTINGS, enterTransition = zEnter, popExitTransition = zPopExit) {
                 SettingsScreen(
                     onManageActivities = { navController.navigate(Routes.ACTIVITIES) },
                     onManageGoals = { navController.navigate(Routes.GOALS) },
+                    onManageReminders = { navController.navigate(Routes.REMINDERS) },
+                    onCustomizeMoods = { navController.navigate(Routes.CUSTOMIZE_MOODS) },
                     onShowMessage = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
                     modifier = Modifier.padding(padding),
+                )
+            }
+            composable(Routes.REMINDERS, enterTransition = zEnter, popExitTransition = zPopExit) {
+                RemindersScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Routes.CUSTOMIZE_MOODS, enterTransition = zEnter, popExitTransition = zPopExit) {
+                CustomizeMoodsScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Routes.ACHIEVEMENTS, enterTransition = zEnter, popExitTransition = zPopExit) {
+                AchievementsScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Routes.ACTIVATION, enterTransition = zEnter, popExitTransition = zPopExit) {
+                BehavioralActivationScreen(
+                    onBack = { navController.popBackStack() },
+                    onShowMessage = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
+                )
+            }
+            composable(Routes.THOUGHT_RECORDS, enterTransition = zEnter, popExitTransition = zPopExit) {
+                ThoughtRecordListScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpen = { id -> navController.navigate(Routes.thoughtRecord(id)) },
+                    onNew = { navController.navigate(Routes.thoughtRecord()) },
+                )
+            }
+            composable(
+                Routes.THOUGHT_RECORD_PATTERN,
+                arguments = listOf(navArgument("recordId") { type = NavType.StringType }),
+                enterTransition = sheetEnter,
+                popExitTransition = sheetPopExit,
+            ) {
+                ThoughtRecordEditorScreen(onDone = { navController.popBackStack() })
+            }
+            composable(Routes.MOVEMENT, enterTransition = zEnter, popExitTransition = zPopExit) {
+                MovementHubScreen(
+                    onBack = { navController.popBackStack() },
+                    onStart = { id -> navController.navigate(Routes.movementSession(id)) },
+                )
+            }
+            composable(
+                Routes.MOVEMENT_SESSION_PATTERN,
+                arguments = listOf(navArgument("routineId") { type = NavType.StringType }),
+                enterTransition = sheetEnter,
+                popExitTransition = sheetPopExit,
+            ) { entry ->
+                MovementSessionScreen(
+                    routineId = entry.arguments?.getString("routineId") ?: "",
+                    onDone = { navController.popBackStack() },
                 )
             }
             composable(Routes.GOALS) {
@@ -400,4 +517,18 @@ fun DaymarkAppScaffold(initialMood: Int = -1) {
             }
         }
     }
+}
+
+/** Maps a [Signals.Action] (from a "For you" card) to a navigation route. */
+private fun signalActionRoute(action: Signals.Action): String = when (action) {
+    is Signals.Action.CreateGoalFromFactor -> Routes.goal()
+    is Signals.Action.TakeCheckin -> Assessments.ALL.firstOrNull { it.title.startsWith(action.name) }
+        ?.let { Routes.assessment(it.key) } ?: Routes.ASSESSMENTS
+    Signals.Action.OpenSupport -> Routes.SUPPORT
+    Signals.Action.OpenBreathing -> Routes.BREATHING
+    Signals.Action.OpenThoughtRecord -> Routes.thoughtRecord()
+    Signals.Action.OpenJournal -> Routes.journalEntry()
+    Signals.Action.OpenMovement -> Routes.MOVEMENT
+    Signals.Action.OpenCrisisResources -> Routes.CRISIS
+    Signals.Action.LogToday -> Routes.entry()
 }

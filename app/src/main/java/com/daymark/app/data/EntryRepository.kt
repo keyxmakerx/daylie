@@ -10,6 +10,7 @@ import javax.inject.Singleton
 @Singleton
 class EntryRepository @Inject constructor(
     private val entryDao: EntryDao,
+    private val photoStore: PhotoStore,
 ) {
     fun observeAll(): Flow<List<EntryWithActivities>> = entryDao.observeAll()
 
@@ -35,8 +36,22 @@ class EntryRepository @Inject constructor(
         return id
     }
 
+    /**
+     * Removes the entry row and its activity links. The attached photo file is intentionally
+     * left on disk so a swipe-to-delete can be undone; callers do a permanent delete via
+     * [deletePhoto] once the undo window has passed.
+     */
     suspend fun delete(entry: MoodEntry) {
         entryDao.clearCrossRefs(entry.id)
         entryDao.delete(entry)
     }
+
+    /** Re-inserts a previously deleted entry with its original id and activity links (undo). */
+    suspend fun restore(entry: MoodEntry, activityIds: List<Long>) {
+        entryDao.insert(entry)
+        entryDao.setActivities(entry.id, activityIds)
+    }
+
+    /** Permanently removes a stored photo file (no-op if null). */
+    fun deletePhoto(relPath: String?) = photoStore.delete(relPath)
 }

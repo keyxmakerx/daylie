@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
@@ -49,6 +51,8 @@ import java.time.ZoneId
 fun SettingsScreen(
     onManageActivities: () -> Unit,
     onManageGoals: () -> Unit,
+    onManageReminders: () -> Unit,
+    onCustomizeMoods: () -> Unit,
     onShowMessage: (String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
@@ -60,10 +64,6 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         viewModel.messages.collect { onShowMessage(it) }
     }
-
-    val notifPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted -> viewModel.setReminderEnabled(granted) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
@@ -83,9 +83,9 @@ fun SettingsScreen(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { uri -> val o = pdfOptions; if (uri != null && o != null) viewModel.exportPdfTo(uri, o) }
 
-    var showTimePicker by remember { mutableStateOf(false) }
     var showPinDialog by remember { mutableStateOf(false) }
     var showPdfDialog by remember { mutableStateOf(false) }
+    var showAutoLockMenu by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -93,34 +93,19 @@ fun SettingsScreen(
             .padding(vertical = 8.dp),
     ) {
         SectionHeader("Reminders")
-        val reminderTimeMillis = remember(state.reminderHour, state.reminderMinute) {
-            LocalDateTime.now()
-                .withHour(state.reminderHour).withMinute(state.reminderMinute)
-                .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        }
         ListItem(
-            headlineContent = { Text("Daily reminder") },
-            supportingContent = { Text(if (state.reminderEnabled) "On" else "Off") },
-            trailingContent = {
-                Switch(
-                    checked = state.reminderEnabled,
-                    onCheckedChange = { enabled ->
-                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            viewModel.setReminderEnabled(enabled)
-                        }
+            headlineContent = { Text("Reminders") },
+            supportingContent = {
+                Text(
+                    when (state.reminderCount) {
+                        0 -> "None set"
+                        1 -> "1 reminder"
+                        else -> "${state.reminderCount} reminders"
                     },
                 )
             },
+            modifier = Modifier.clickable { onManageReminders() },
         )
-        if (state.reminderEnabled) {
-            ListItem(
-                headlineContent = { Text("Reminder time") },
-                supportingContent = { Text(DateUtils.formatTime(reminderTimeMillis)) },
-                modifier = Modifier.clickable { showTimePicker = true },
-            )
-        }
 
         Divider()
         SectionHeader("Privacy")
@@ -160,6 +145,31 @@ fun SettingsScreen(
                             }
                         },
                     )
+                },
+            )
+            ListItem(
+                headlineContent = { Text("Auto-lock") },
+                supportingContent = { Text(autoLockLabel(state.autoLockTimeoutMinutes)) },
+                trailingContent = {
+                    androidx.compose.foundation.layout.Box {
+                        TextButton(onClick = { showAutoLockMenu = true }) {
+                            Text(autoLockLabel(state.autoLockTimeoutMinutes))
+                        }
+                        DropdownMenu(
+                            expanded = showAutoLockMenu,
+                            onDismissRequest = { showAutoLockMenu = false },
+                        ) {
+                            AUTO_LOCK_OPTIONS.forEach { minutes ->
+                                DropdownMenuItem(
+                                    text = { Text(autoLockLabel(minutes)) },
+                                    onClick = {
+                                        viewModel.setAutoLockTimeout(minutes)
+                                        showAutoLockMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
                 },
             )
         }
@@ -205,6 +215,11 @@ fun SettingsScreen(
         Divider()
         SectionHeader("Appearance")
         ListItem(
+            headlineContent = { Text("Customize moods") },
+            supportingContent = { Text("Rename and recolor the five mood levels") },
+            modifier = Modifier.clickable { onCustomizeMoods() },
+        )
+        ListItem(
             headlineContent = { Text("Dynamic color") },
             supportingContent = { Text("Use wallpaper-based colors (Android 12+)") },
             trailingContent = {
@@ -217,25 +232,6 @@ fun SettingsScreen(
         ListItem(
             headlineContent = { Text("Daymark") },
             supportingContent = { Text("Open-source mood tracker · all data stays on your device") },
-        )
-    }
-
-    if (showTimePicker) {
-        val tpState = rememberTimePickerState(
-            initialHour = state.reminderHour,
-            initialMinute = state.reminderMinute,
-            is24Hour = false,
-        )
-        AlertDialog(
-            onDismissRequest = { showTimePicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.setReminderTime(tpState.hour, tpState.minute)
-                    showTimePicker = false
-                }) { Text("OK") }
-            },
-            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } },
-            text = { TimePicker(state = tpState) },
         )
     }
 
@@ -385,4 +381,12 @@ private fun SectionHeader(text: String) {
         color = MaterialTheme.colorScheme.tertiary,
         modifier = Modifier.padding(start = 18.dp, top = 18.dp, bottom = 6.dp),
     )
+}
+
+private val AUTO_LOCK_OPTIONS = listOf(0, 1, 5, 15)
+
+private fun autoLockLabel(minutes: Int): String = when (minutes) {
+    0 -> "Immediately"
+    1 -> "After 1 minute"
+    else -> "After $minutes minutes"
 }

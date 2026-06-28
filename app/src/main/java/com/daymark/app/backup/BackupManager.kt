@@ -12,7 +12,10 @@ import com.daymark.app.data.entity.ActivityEntity
 import com.daymark.app.data.entity.EntryActivityCrossRef
 import com.daymark.app.data.entity.Goal
 import com.daymark.app.data.entity.JournalEntry
+import com.daymark.app.data.entity.AssessmentResult
 import com.daymark.app.data.entity.MoodEntry
+import com.daymark.app.data.entity.ThoughtRecord
+import com.daymark.app.data.entity.Reminder
 import com.daymark.app.data.entity.SleepLog
 import com.daymark.app.data.entity.Tracker
 import com.daymark.app.data.entity.TrackerLog
@@ -35,7 +38,14 @@ internal fun csvField(value: String): String =
     }
 
 @Serializable
-data class BackupEntry(val id: Long, val dateTime: Long, val moodLevel: Int, val note: String)
+data class BackupEntry(
+    val id: Long,
+    val dateTime: Long,
+    val moodLevel: Int,
+    val note: String,
+    // Added in v6: relative filename of an attached photo (bytes live in BackupData.photos).
+    val photoPath: String? = null,
+)
 
 @Serializable
 data class BackupActivity(val id: Long, val name: String, val iconKey: String, val sortOrder: Int, val archived: Boolean)
@@ -54,6 +64,9 @@ data class BackupGoal(
     val targetPerWeek: Int,
     val createdAt: Long,
     val archived: Boolean,
+    // Added in v11.
+    val cue: String = "",
+    val routine: String = "",
 )
 
 @Serializable
@@ -75,8 +88,21 @@ data class BackupTracker(
 data class BackupTrackerLog(val id: Long, val trackerId: Long, val dateTime: Long, val value: Double, val note: String)
 
 @Serializable
+data class BackupReminder(val id: Long, val hour: Int, val minute: Int, val enabled: Boolean, val label: String)
+
+@Serializable
+data class BackupAssessment(val id: Long, val key: String, val dateTime: Long, val score: Int, val bandLabel: String)
+
+@Serializable
+data class BackupThoughtRecord(
+    val id: Long, val dateTime: Long, val situation: String, val automaticThought: String,
+    val evidenceFor: String, val evidenceAgainst: String, val balancedThought: String,
+    val moodBefore: Int, val moodAfter: Int, val distortions: String,
+)
+
+@Serializable
 data class BackupData(
-    val version: Int = 5,
+    val version: Int = 12,
     val exportedAt: Long,
     val entries: List<BackupEntry>,
     val activities: List<BackupActivity>,
@@ -91,6 +117,19 @@ data class BackupData(
     // Added in v5.
     val trackers: List<BackupTracker> = emptyList(),
     val trackerLogs: List<BackupTrackerLog> = emptyList(),
+    // Added in v6: entry photos as filename -> base64-encoded JPEG bytes, kept in the one file.
+    val photos: Map<String, String> = emptyMap(),
+    // Added in v7.
+    val reminders: List<BackupReminder> = emptyList(),
+    // Added in v8: per-level mood label/colour overrides (kept in prefs, not the DB).
+    val moodLabels: Map<Int, String> = emptyMap(),
+    val moodColors: Map<Int, Int> = emptyMap(),
+    // Added in v9.
+    val assessments: List<BackupAssessment> = emptyList(),
+    // Added in v10: achievement unlock times (id -> epoch millis), kept in prefs.
+    val achievements: Map<String, Long> = emptyMap(),
+    // Added in v12.
+    val thoughtRecords: List<BackupThoughtRecord> = emptyList(),
 )
 
 /**
@@ -107,21 +146,34 @@ class BackupManager @Inject constructor(
     private val treatmentDao: TreatmentDao,
     private val trackerDao: TrackerDao,
     private val trackerLogDao: TrackerLogDao,
+    private val reminderDao: com.daymark.app.data.dao.ReminderDao,
+    private val reminderRepository: com.daymark.app.data.ReminderRepository,
+    private val photoStore: com.daymark.app.data.PhotoStore,
+    private val moodCustomization: com.daymark.app.data.MoodCustomizationStore,
+    private val assessmentDao: com.daymark.app.data.dao.AssessmentDao,
+    private val achievementsStore: com.daymark.app.data.AchievementsStore,
+    private val thoughtRecordDao: com.daymark.app.data.dao.ThoughtRecordDao,
 ) {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
     suspend fun exportToJson(nowMillis: Long): String {
+        val allEntries = entryDao.getAllEntries()
+        // Embed each referenced photo's bytes as base64 so the backup stays a single portable file.
+        val photos = allEntries.mapNotNull { it.photoPath }.distinct()
+            .mapNotNull { path -> photoStore.readBytes(path)?.let { path to encodeBase64(it) } }
+            .toMap()
         val data = BackupData(
             version = CURRENT_VERSION,
             exportedAt = nowMillis,
-            entries = entryDao.getAllEntries().map { BackupEntry(it.id, it.dateTime, it.moodLevel, it.note) },
+            entries = allEntries.map { BackupEntry(it.id, it.dateTime, it.moodLevel, it.note, it.photoPath) },
+            photos = photos,
             activities = activityDao.getAllOnce().map {
                 BackupActivity(it.id, it.name, it.iconKey, it.sortOrder, it.archived)
             },
             refs = entryDao.getAllCrossRefs().map { BackupRef(it.entryId, it.activityId) },
             journal = journalDao.getAll().map { BackupJournal(it.id, it.dateTime, it.title, it.body) },
             goals = goalDao.getAll().map {
-                BackupGoal(it.id, it.title, it.activityId, it.targetPerWeek, it.createdAt, it.archived)
+                BackupGoal(it.id, it.title, it.activityId, it.targetPerWeek, it.createdAt, it.archived, it.cue, it.routine)
             },
             sleepLogs = sleepLogDao.getAll().map {
                 BackupSleepLog(it.id, it.night, it.bedTime, it.wakeTime, it.sleepLatencyMin, it.awakeMin, it.quality, it.note)
@@ -131,6 +183,15 @@ class BackupManager @Inject constructor(
                 BackupTracker(it.id, it.name, it.type, it.minValue, it.maxValue, it.unit, it.sortOrder, it.archived)
             },
             trackerLogs = trackerLogDao.getAll().map { BackupTrackerLog(it.id, it.trackerId, it.dateTime, it.value, it.note) },
+            reminders = reminderDao.getAll().map { BackupReminder(it.id, it.hour, it.minute, it.enabled, it.label) },
+            moodLabels = moodCustomization.labels(),
+            moodColors = moodCustomization.colors(),
+            assessments = assessmentDao.getAll().map { BackupAssessment(it.id, it.key, it.dateTime, it.score, it.bandLabel) },
+            achievements = achievementsStore.all(),
+            thoughtRecords = thoughtRecordDao.getAll().map {
+                BackupThoughtRecord(it.id, it.dateTime, it.situation, it.automaticThought, it.evidenceFor,
+                    it.evidenceAgainst, it.balancedThought, it.moodBefore, it.moodAfter, it.distortions)
+            },
         )
         return json.encodeToString(data)
     }
@@ -150,7 +211,7 @@ class BackupManager @Inject constructor(
             val row = listOf(
                 DateUtils.formatDate(e.dateTime),
                 DateUtils.formatTime(e.dateTime),
-                Mood.fromLevel(e.moodLevel).label,
+                moodCustomization.labelFor(e.moodLevel) ?: Mood.fromLevel(e.moodLevel).label,
                 names,
                 e.note,
             ).joinToString(",") { csvField(it) }
@@ -177,9 +238,18 @@ class BackupManager @Inject constructor(
             ImportMode.REPLACE -> importReplace(data)
             ImportMode.MERGE -> importMerge(data)
         }
+        // Re-arm alarms for whatever reminder set we now hold.
+        reminderRepository.rescheduleAll()
+        // Restore mood label/colour overrides. REPLACE starts clean; MERGE overlays.
+        if (mode == ImportMode.REPLACE) moodCustomization.reset()
+        data.moodLabels.forEach { (lvl, label) -> moodCustomization.setLabel(lvl, label) }
+        data.moodColors.forEach { (lvl, color) -> moodCustomization.setColor(lvl, color) }
+        achievementsStore.restore(data.achievements)
     }
 
     private suspend fun importReplace(data: BackupData) {
+        // Cancel alarms for the reminders we're about to wipe, so stale ids don't keep firing.
+        reminderRepository.cancelAllAlarms()
         entryDao.deleteAllCrossRefs()
         entryDao.deleteAllEntries()
         activityDao.deleteAll()
@@ -188,14 +258,18 @@ class BackupManager @Inject constructor(
         sleepLogDao.deleteAll()
         treatmentDao.deleteAll()
 
+        // Restore photos under their original filenames (entries reference them by name).
+        photoStore.clearAll()
+        data.photos.forEach { (name, b64) -> runCatching { photoStore.writeBytes(name, decodeBase64(b64)) } }
+
         activityDao.insertAll(
             data.activities.map { ActivityEntity(it.id, it.name, it.iconKey, it.sortOrder, it.archived) },
         )
-        data.entries.forEach { entryDao.insert(MoodEntry(it.id, it.dateTime, it.moodLevel, it.note)) }
+        data.entries.forEach { entryDao.insert(MoodEntry(it.id, it.dateTime, it.moodLevel, it.note, it.photoPath)) }
         entryDao.insertCrossRefs(data.refs.map { EntryActivityCrossRef(it.entryId, it.activityId) })
         data.journal.forEach { journalDao.insert(JournalEntry(it.id, it.dateTime, it.title, it.body)) }
         data.goals.forEach {
-            goalDao.insert(Goal(it.id, it.title, it.activityId, it.targetPerWeek, it.createdAt, it.archived))
+            goalDao.insert(Goal(it.id, it.title, it.activityId, it.targetPerWeek, it.createdAt, it.archived, it.cue, it.routine))
         }
         data.sleepLogs.forEach {
             sleepLogDao.insert(SleepLog(it.id, it.night, it.bedTime, it.wakeTime, it.sleepLatencyMin, it.awakeMin, it.quality, it.note))
@@ -207,6 +281,17 @@ class BackupManager @Inject constructor(
             trackerDao.insert(Tracker(it.id, it.name, it.type, it.minValue, it.maxValue, it.unit, it.sortOrder, it.archived))
         }
         data.trackerLogs.forEach { trackerLogDao.insert(TrackerLog(it.id, it.trackerId, it.dateTime, it.value, it.note)) }
+        reminderDao.deleteAll()
+        data.reminders.forEach { reminderDao.insert(Reminder(it.id, it.hour, it.minute, it.enabled, it.label)) }
+        assessmentDao.deleteAll()
+        data.assessments.forEach {
+            assessmentDao.insert(AssessmentResult(it.id, it.key, it.dateTime, it.score, it.bandLabel))
+        }
+        thoughtRecordDao.deleteAll()
+        data.thoughtRecords.forEach {
+            thoughtRecordDao.insert(ThoughtRecord(it.id, it.dateTime, it.situation, it.automaticThought,
+                it.evidenceFor, it.evidenceAgainst, it.balancedThought, it.moodBefore, it.moodAfter, it.distortions))
+        }
     }
 
     /** Adds backup rows alongside existing data, assigning new ids and remapping links. */
@@ -217,9 +302,19 @@ class BackupManager @Inject constructor(
             activityIdMap[a.id] = newId
         }
 
+        // Write the backup's photos under fresh names when they'd collide with existing files,
+        // building old-name -> stored-name so merged entries point at the right file.
+        val photoNameMap = HashMap<String, String>()
+        data.photos.forEach { (name, b64) ->
+            val target = if (photoStore.exists(name)) photoStore.freshName() else name
+            runCatching { photoStore.writeBytes(target, decodeBase64(b64)) }
+                .onSuccess { photoNameMap[name] = target }
+        }
+
         val entryIdMap = HashMap<Long, Long>()
         data.entries.forEach { e ->
-            val newId = entryDao.insert(MoodEntry(0, e.dateTime, e.moodLevel, e.note))
+            val photo = e.photoPath?.let { photoNameMap[it] ?: it }
+            val newId = entryDao.insert(MoodEntry(0, e.dateTime, e.moodLevel, e.note, photo))
             entryIdMap[e.id] = newId
         }
 
@@ -237,7 +332,7 @@ class BackupManager @Inject constructor(
         data.journal.forEach { j -> journalDao.insert(JournalEntry(0, j.dateTime, j.title, j.body)) }
         data.goals.forEach { g ->
             goalDao.insert(
-                Goal(0, g.title, g.activityId?.let { activityIdMap[it] }, g.targetPerWeek, g.createdAt, g.archived),
+                Goal(0, g.title, g.activityId?.let { activityIdMap[it] }, g.targetPerWeek, g.createdAt, g.archived, g.cue, g.routine),
             )
         }
         // Sleep logs and treatments have no foreign keys, so merge is a plain insert with fresh ids.
@@ -256,9 +351,24 @@ class BackupManager @Inject constructor(
                 trackerLogDao.insert(TrackerLog(0, newTrackerId, l.dateTime, l.value, l.note))
             }
         }
+        // Reminders have no foreign keys, so merge is a plain insert with fresh ids.
+        data.reminders.forEach { r -> reminderDao.insert(Reminder(0, r.hour, r.minute, r.enabled, r.label)) }
+        data.assessments.forEach { a ->
+            assessmentDao.insert(AssessmentResult(0, a.key, a.dateTime, a.score, a.bandLabel))
+        }
+        data.thoughtRecords.forEach { t ->
+            thoughtRecordDao.insert(ThoughtRecord(0, t.dateTime, t.situation, t.automaticThought,
+                t.evidenceFor, t.evidenceAgainst, t.balancedThought, t.moodBefore, t.moodAfter, t.distortions))
+        }
     }
 
+    private fun encodeBase64(bytes: ByteArray): String =
+        android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+
+    private fun decodeBase64(text: String): ByteArray =
+        android.util.Base64.decode(text, android.util.Base64.NO_WRAP)
+
     companion object {
-        const val CURRENT_VERSION = 5
+        const val CURRENT_VERSION = 12
     }
 }

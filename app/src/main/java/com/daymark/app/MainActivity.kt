@@ -26,7 +26,16 @@ import com.daymark.app.ui.lock.LockScreen
 import com.daymark.app.ui.onboarding.OnboardingScreen
 import com.daymark.app.ui.theme.DaymarkTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
+
+/** Content-based snapshot of the prefs that drive the theme/lock, so recomposition is reliable. */
+private data class ThemePrefs(
+    val dynamicColor: Boolean,
+    val moodColorOverrides: Map<Int, Int>,
+    val moodLabelOverrides: Map<Int, String>,
+    val lockEnabled: Boolean,
+)
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
@@ -34,22 +43,36 @@ class MainActivity : FragmentActivity() {
     @Inject lateinit var settings: SettingsRepository
     @Inject lateinit var pinManager: PinManager
     @Inject lateinit var autoLock: AutoLockController
+    @Inject lateinit var moodCustomization: com.daymark.app.data.MoodCustomizationStore
 
     companion object {
         const val EXTRA_PREFILL_MOOD = "prefill_mood"
+        const val EXTRA_OPEN_EDITOR = "open_editor"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val initialMood = intent?.getIntExtra(EXTRA_PREFILL_MOOD, -1) ?: -1
+        val openEditor = intent?.getBooleanExtra(EXTRA_OPEN_EDITOR, false) ?: false
         setContent {
-            val prefs by settings.changes().collectAsState(initial = null)
-            // Re-read on any preference change.
-            val dynamicColor = prefs?.let { settings.dynamicColor } ?: settings.dynamicColor
+            // Map the prefs-change flow to a *content-based* snapshot. SettingsRepository.changes()
+            // re-emits the same SharedPreferences instance, which collectAsState would dedup — so a
+            // value object (with structural equality) is what actually drives recomposition when a
+            // setting or a mood override changes.
+            fun snapshot() = ThemePrefs(
+                dynamicColor = settings.dynamicColor,
+                moodColorOverrides = moodCustomization.colors(),
+                moodLabelOverrides = moodCustomization.labels(),
+                lockEnabled = settings.lockEnabled && pinManager.isPinSet,
+            )
+            val themePrefs by remember { settings.changes().map { snapshot() } }
+                .collectAsState(initial = snapshot())
+            val dynamicColor = themePrefs.dynamicColor
+            val moodColorOverrides = themePrefs.moodColorOverrides
+            val moodLabelOverrides = themePrefs.moodLabelOverrides
             // Only lock when a PIN actually exists (avoids a lock-out with no way in).
-            val lockEnabled = (prefs?.let { settings.lockEnabled } ?: settings.lockEnabled) &&
-                pinManager.isPinSet
+            val lockEnabled = themePrefs.lockEnabled
 
             // Keep private content out of screenshots and the recents thumbnail whenever locking
             // is on. Reactive (not onCreate-only) so toggling the lock applies/clears immediately.
@@ -67,14 +90,20 @@ class MainActivity : FragmentActivity() {
             // flow re-emits the same instance, which doesn't trigger recomposition).
             var onboarded by remember { mutableStateOf(settings.onboardingComplete) }
 
-            // Re-lock whenever the whole app goes to the background.
+            // Re-lock when the app returns from the background, but only after the user's chosen
+            // grace period (auto-lock timeout). A file-picker round trip is exempted via the skip.
             if (lockEnabled) {
                 DisposableEffect(Unit) {
                     val owner = ProcessLifecycleOwner.get()
                     val observer = LifecycleEventObserver { _, event ->
-                        // Skip the re-lock once if we intentionally backgrounded for a file picker.
-                        if (event == Lifecycle.Event.ON_STOP && !autoLock.consumeSkip()) {
-                            unlocked = false
+                        when (event) {
+                            Lifecycle.Event.ON_STOP -> autoLock.onBackgrounded()
+                            Lifecycle.Event.ON_START -> {
+                                if (autoLock.shouldLockOnForeground(settings.autoLockTimeoutMinutes)) {
+                                    unlocked = false
+                                }
+                            }
+                            else -> {}
                         }
                     }
                     owner.lifecycle.addObserver(observer)
@@ -82,7 +111,11 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            DaymarkTheme(dynamicColor = dynamicColor) {
+            DaymarkTheme(
+                dynamicColor = dynamicColor,
+                moodColorOverrides = moodColorOverrides,
+                moodLabelOverrides = moodLabelOverrides,
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
@@ -90,7 +123,7 @@ class MainActivity : FragmentActivity() {
                     when {
                         !onboarded -> OnboardingScreen(onFinish = { unlocked = true; onboarded = true })
                         lockEnabled && !unlocked -> LockScreen(onUnlocked = { unlocked = true })
-                        else -> DaymarkAppScaffold(initialMood = initialMood)
+                        else -> DaymarkAppScaffold(initialMood = initialMood, openEditor = openEditor)
                     }
                 }
             }

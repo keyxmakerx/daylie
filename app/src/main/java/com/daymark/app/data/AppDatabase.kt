@@ -13,10 +13,12 @@ import com.daymark.app.data.dao.TrackerDao
 import com.daymark.app.data.dao.TrackerLogDao
 import com.daymark.app.data.dao.TreatmentDao
 import com.daymark.app.data.entity.ActivityEntity
+import com.daymark.app.data.entity.AssessmentResult
 import com.daymark.app.data.entity.EntryActivityCrossRef
 import com.daymark.app.data.entity.Goal
 import com.daymark.app.data.entity.JournalEntry
 import com.daymark.app.data.entity.MoodEntry
+import com.daymark.app.data.entity.Reminder
 import com.daymark.app.data.entity.SleepLog
 import com.daymark.app.data.entity.Tracker
 import com.daymark.app.data.entity.TrackerLog
@@ -26,9 +28,10 @@ import com.daymark.app.data.entity.Treatment
     entities = [
         MoodEntry::class, ActivityEntity::class, EntryActivityCrossRef::class,
         JournalEntry::class, Goal::class, SleepLog::class, Treatment::class,
-        Tracker::class, TrackerLog::class,
+        Tracker::class, TrackerLog::class, Reminder::class, AssessmentResult::class,
+        com.daymark.app.data.entity.ThoughtRecord::class,
     ],
-    version = 7,
+    version = 12,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -40,6 +43,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun treatmentDao(): TreatmentDao
     abstract fun trackerDao(): TrackerDao
     abstract fun trackerLogDao(): TrackerLogDao
+    abstract fun reminderDao(): com.daymark.app.data.dao.ReminderDao
+    abstract fun assessmentDao(): com.daymark.app.data.dao.AssessmentDao
+    abstract fun thoughtRecordDao(): com.daymark.app.data.dao.ThoughtRecordDao
 
     /** Seeds a sensible set of starter activities on first install. */
     class SeedCallback : Callback() {
@@ -153,6 +159,74 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_tracker_logs_trackerId` ON `tracker_logs` (`trackerId`)",
+                )
+            }
+        }
+
+        /** v8 adds an optional photo attachment to mood entries; existing data is preserved. */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE mood_entries ADD COLUMN photoPath TEXT")
+            }
+        }
+
+        /** v9 adds the reminders table (multiple daily reminders); existing data is preserved. */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `reminders` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`hour` INTEGER NOT NULL, " +
+                        "`minute` INTEGER NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, " +
+                        "`label` TEXT NOT NULL)",
+                )
+            }
+        }
+
+        /** v10 adds the assessment_results table (PHQ-9/GAD-7/WHO-5 history); data is preserved. */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `assessment_results` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`key` TEXT NOT NULL, " +
+                        "`dateTime` INTEGER NOT NULL, " +
+                        "`score` INTEGER NOT NULL, " +
+                        "`bandLabel` TEXT NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_assessment_results_key` ON `assessment_results` (`key`)",
+                )
+            }
+        }
+
+        /** v11 adds optional if-then (cue/routine) fields to goals; existing data is preserved. */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE goals ADD COLUMN cue TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE goals ADD COLUMN routine TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /** v12 adds the thought_records table (CBT thought records); existing data is preserved. */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `thought_records` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`dateTime` INTEGER NOT NULL, " +
+                        "`situation` TEXT NOT NULL, " +
+                        "`automaticThought` TEXT NOT NULL, " +
+                        "`evidenceFor` TEXT NOT NULL, " +
+                        "`evidenceAgainst` TEXT NOT NULL, " +
+                        "`balancedThought` TEXT NOT NULL, " +
+                        "`moodBefore` INTEGER NOT NULL, " +
+                        "`moodAfter` INTEGER NOT NULL, " +
+                        "`distortions` TEXT NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_thought_records_dateTime` ON `thought_records` (`dateTime`)",
                 )
             }
         }

@@ -1,6 +1,11 @@
 package com.daymark.app.ui.more
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +20,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.annotation.DrawableRes
@@ -35,6 +43,11 @@ fun MoreHubScreen(
     onSleep: () -> Unit,
     onTrackers: () -> Unit,
     onGentleSupport: () -> Unit,
+    onCheckins: () -> Unit,
+    onAchievements: () -> Unit,
+    onActivation: () -> Unit,
+    onThoughtRecords: () -> Unit,
+    onMovement: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -85,10 +98,61 @@ fun MoreHubScreen(
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
         ) {
             HubCard(
+                icon = R.drawable.ic_act_exercise,
+                title = "Do one thing",
+                subtitle = "Behavioral activation",
+                onClick = onActivation,
+                modifier = Modifier.weight(1f),
+            )
+            HubCard(
+                icon = R.drawable.ic_ui_more,
+                title = "Thought records",
+                subtitle = "CBT: examine a thought",
+                onClick = onThoughtRecords,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        ) {
+            HubCard(
+                icon = R.drawable.ic_act_exercise,
+                title = "Move",
+                subtitle = "Gentle yoga & stretches",
+                onClick = onMovement,
+                modifier = Modifier.weight(1f),
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        ) {
+            HubCard(
                 icon = R.drawable.ic_act_star,
                 title = "Trackers",
                 subtitle = "Track anything vs. mood",
                 onClick = onTrackers,
+                modifier = Modifier.weight(1f),
+            )
+            HubCard(
+                icon = R.drawable.ic_act_sleep,
+                title = "Check-ins",
+                subtitle = "PHQ-9 · GAD-7 · WHO-5",
+                onClick = onCheckins,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        ) {
+            HubCard(
+                icon = R.drawable.ic_act_star,
+                title = "Achievements",
+                subtitle = "Milestones for showing up",
+                onClick = onAchievements,
                 modifier = Modifier.weight(1f),
             )
             HubCard(
@@ -120,12 +184,19 @@ private fun HubCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    PaperSurface(modifier = modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.96f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "cardPress",
+    )
+    PaperSurface(modifier = modifier.graphicsLayer { scaleX = scale; scaleY = scale }) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(112.dp)
-                .clickable { onClick() }
+                .clickable(interactionSource = interaction, indication = null) { onClick() }
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {

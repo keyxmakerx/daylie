@@ -11,6 +11,8 @@ object Routes {
     const val JOURNAL = "journal"
     const val SETTINGS = "settings"
     const val ACTIVITIES = "activities"
+    const val REMINDERS = "reminders"
+    const val CUSTOMIZE_MOODS = "customize_moods"
     const val ACTIVITY_LIBRARY = "activity_library"
     const val SEARCH = "search"
     const val TRACKERS = "trackers"
@@ -39,9 +41,28 @@ object Routes {
     /** Sleep self-check questionnaire route, keyed by screener id. */
     fun screener(key: String) = "$SCREENER/$key"
     const val SCREENER_PATTERN = "$SCREENER/{screenerKey}"
+    const val ASSESSMENTS = "assessments"
+    const val ACHIEVEMENTS = "achievements"
+    const val ACTIVATION = "behavioral_activation"
+    const val THOUGHT_RECORDS = "thought_records"
+    const val THOUGHT_RECORD = "thought_record"
+    fun thoughtRecord(id: Long = 0L) = "$THOUGHT_RECORD/$id"
+    const val THOUGHT_RECORD_PATTERN = "$THOUGHT_RECORD/{recordId}"
+    const val MOVEMENT = "movement"
+    const val MOVEMENT_SESSION = "movement_session"
+    fun movementSession(id: String) = "$MOVEMENT_SESSION/$id"
+    const val MOVEMENT_SESSION_PATTERN = "$MOVEMENT_SESSION/{routineId}"
+    const val ASSESSMENT = "assessment"
+    fun assessment(key: String) = "$ASSESSMENT/$key"
+    const val ASSESSMENT_PATTERN = "$ASSESSMENT/{assessmentKey}"
     const val ENTRY = "entry"
     const val JOURNAL_ENTRY = "journal_entry"
     const val YEAR_PIXELS = "year_pixels"
+
+    /** Full-screen "Review my year" walkthrough, keyed by year. */
+    const val REVIEW_YEAR = "review_year"
+    fun reviewYear(year: Int) = "$REVIEW_YEAR/$year"
+    const val REVIEW_YEAR_PATTERN = "$REVIEW_YEAR/{year}"
     const val GOALS = "goals"
 
     /** A single day's entries, keyed by epoch-day. */

@@ -1,23 +1,34 @@
 package com.daymark.app.ui.entry
 
+import com.daymark.app.ui.components.SentenceCaps
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,8 +54,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.daymark.app.ui.theme.moodLabels
 import com.daymark.app.model.Mood
 import com.daymark.app.ui.components.ActivityChip
+import com.daymark.app.ui.components.EntryPhoto
 import com.daymark.app.ui.components.MoodFace
 import com.daymark.app.util.DateUtils
 import java.time.LocalDateTime
@@ -67,6 +80,10 @@ fun EntryEditorScreen(
 
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
+
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let(viewModel::setPhoto) }
 
     Scaffold(
         topBar = {
@@ -118,7 +135,7 @@ fun EntryEditorScreen(
                     ) {
                         MoodFace(mood = mood, size = 52, selected = selected)
                         Text(
-                            text = mood.label,
+                            text = MaterialTheme.moodLabels.forLevel(mood.level),
                             style = MaterialTheme.typography.labelSmall,
                             color = if (selected) MaterialTheme.colorScheme.onSurface
                             else MaterialTheme.colorScheme.tertiary,
@@ -152,10 +169,43 @@ fun EntryEditorScreen(
             OutlinedTextField(
                 value = state.note,
                 onValueChange = viewModel::setNote,
+                keyboardOptions = SentenceCaps,
                 placeholder = { Text("What happened, what's on your mind…") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 4,
             )
+
+            Text("Photo", style = MaterialTheme.typography.titleMedium)
+            val photoPath = state.photoPath
+            if (photoPath != null) {
+                Box {
+                    EntryPhoto(photoPath = photoPath, size = 140.dp, cornerRadius = 14.dp)
+                    FilledIconButton(
+                        onClick = viewModel::clearPhoto,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(30.dp)
+                            .clip(CircleShape),
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Remove photo",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            } else {
+                OutlinedButton(onClick = {
+                    viewModel.prepareForPicker()
+                    photoPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                }) {
+                    Icon(Icons.Filled.AddAPhoto, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  Add photo")
+                }
+            }
 
             Button(
                 onClick = viewModel::save,

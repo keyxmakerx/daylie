@@ -1,5 +1,6 @@
 package com.daymark.app.ui.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,12 +15,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -28,8 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.daymark.app.ui.theme.moodLabels
 import com.daymark.app.data.entity.EntryWithActivities
 import com.daymark.app.model.Mood
+import com.daymark.app.ui.components.EntryPhoto
 import com.daymark.app.ui.components.MoodFaceIcon
 import com.daymark.app.ui.components.PaperSurface
 import com.daymark.app.ui.icon.ActivityIcons
@@ -40,11 +53,20 @@ import com.daymark.app.util.DateUtils
 fun HomeScreen(
     onEntryClick: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    onSignalAction: (com.daymark.app.stats.Signals.Action) -> Unit = {},
+    onUndoableDelete: (onUndo: () -> Unit, onExpire: () -> Unit) -> Unit = { _, _ -> },
     viewModel: HomeViewModel = hiltViewModel(),
     memoriesViewModel: MemoriesViewModel = hiltViewModel(),
+    signalsViewModel: com.daymark.app.ui.insights.SignalsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val memories by memoriesViewModel.memories.collectAsStateWithLifecycle()
+    val signals by signalsViewModel.signals.collectAsStateWithLifecycle()
+    // Hoisted so the item below is only emitted when a card is actually visible — dismissing the
+    // last feed card then drops the slot cleanly instead of leaving a stray gap.
+    var feedDismissed by rememberSaveable(stateSaver = com.daymark.app.ui.insights.SignalDismissalSaver) {
+        mutableStateOf(emptySet<String>())
+    }
 
     if (!state.loading && state.entries.isEmpty()) {
         EmptyState(modifier)
@@ -53,12 +75,33 @@ fun HomeScreen(
 
     // Group entries by calendar day, preserving the DESC ordering.
     val grouped = state.entries.groupBy { DateUtils.toLocalDate(it.entry.dateTime) }
+    val feedExclude = setOf("on_this_day") // Home owns its richer "On this day" card below.
+    val feedVisible = com.daymark.app.ui.insights.visibleSignalCount(
+        signals, com.daymark.app.stats.Signals.Surface.Feed, feedDismissed, max = 3, exclude = feedExclude,
+    )
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // The "quiet feed" cards: a gentle check-in invitation, a low-mood support offer, and a
+        // few rules-based wins/insights — most relevant first.
+        if (feedVisible > 0) {
+            item(key = "signals") {
+                com.daymark.app.ui.insights.SignalCards(
+                    signals = signals,
+                    onAction = onSignalAction,
+                    dismissed = feedDismissed,
+                    onDismiss = { feedDismissed = feedDismissed + it },
+                    surface = com.daymark.app.stats.Signals.Surface.Feed,
+                    max = 3,
+                    exclude = feedExclude,
+                    header = null,
+                    modifier = Modifier.animateItem(),
+                )
+            }
+        }
         if (memories.isNotEmpty()) {
             item(key = "on-this-day") {
                 OnThisDayCard(memories, onEntryClick, modifier = Modifier.animateItem())
@@ -70,7 +113,30 @@ fun HomeScreen(
                     label = DateUtils.formatDate(DateUtils.startOfDay(date)),
                     entries = entries,
                     onEntryClick = onEntryClick,
+                    onDelete = { entry ->
+                        viewModel.delete(entry)
+                        onUndoableDelete(
+                            { viewModel.restore(entry) },
+                            { viewModel.purgePhoto(entry) },
+                        )
+                    },
                     modifier = Modifier.animateItem(),
+                )
+            }
+        }
+        // A finite, calm ending — the feed doesn't scroll forever. Only shown once there's an
+        // actual timeline above it (never alone during the initial load flash).
+        if (grouped.isNotEmpty()) {
+            item(key = "caught-up") {
+                Text(
+                    text = "You’re all caught up.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp, bottom = 2.dp)
+                        .animateItem(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
         }
@@ -132,6 +198,7 @@ private fun DaySheet(
     label: String,
     entries: List<EntryWithActivities>,
     onEntryClick: (Long) -> Unit,
+    onDelete: (EntryWithActivities) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     PaperSurface(modifier = modifier.fillMaxWidth()) {
@@ -144,7 +211,13 @@ private fun DaySheet(
                 modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 16.dp),
             )
             entries.forEachIndexed { index, entry ->
-                EntryRow(entry = entry, onClick = { onEntryClick(entry.entry.id) })
+                key(entry.entry.id) {
+                    SwipeableEntryRow(
+                        entry = entry,
+                        onClick = { onEntryClick(entry.entry.id) },
+                        onDelete = { onDelete(entry) },
+                    )
+                }
                 if (index < entries.lastIndex) {
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
@@ -152,6 +225,50 @@ private fun DaySheet(
                     )
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableEntryRow(
+    entry: EntryWithActivities,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) {
+                onDelete()
+                true
+            } else {
+                false
+            }
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = "Delete",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        },
+    ) {
+        // Opaque surface so the row fully covers the red background until swiped.
+        Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+            EntryRow(entry = entry, onClick = onClick)
         }
     }
 }
@@ -173,7 +290,7 @@ private fun EntryRow(entry: EntryWithActivities, onClick: () -> Unit) {
         ) {
             MoodFaceIcon(level = mood.level, size = 42.dp)
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = mood.label, style = MaterialTheme.typography.titleMedium)
+                Text(text = MaterialTheme.moodLabels.forLevel(mood.level), style = MaterialTheme.typography.titleMedium)
                 Text(
                     text = DateUtils.formatTime(entry.entry.dateTime),
                     style = MaterialTheme.typography.bodySmall,
@@ -189,6 +306,9 @@ private fun EntryRow(entry: EntryWithActivities, onClick: () -> Unit) {
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        entry.entry.photoPath?.let { path ->
+            EntryPhoto(photoPath = path, size = 84.dp, cornerRadius = 12.dp)
         }
         if (entry.activities.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {

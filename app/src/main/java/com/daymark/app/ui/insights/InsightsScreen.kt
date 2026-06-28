@@ -20,6 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,12 +49,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.daymark.app.ui.theme.moodColors
+import com.daymark.app.ui.theme.moodLabels
 import com.daymark.app.model.Mood
 import com.daymark.app.ui.calendar.CalendarViewModel
 import com.daymark.app.ui.calendar.YearPixelsViewModel
 import com.daymark.app.ui.components.MoodFaceIcon
 import com.daymark.app.ui.components.PaperSurface
+import com.daymark.app.ui.components.StarsLegend
 import com.daymark.app.ui.components.YearInPixelsGrid
+import com.daymark.app.ui.components.YearInStarsGrid
 import com.daymark.app.ui.stats.StatsViewModel
 import com.daymark.app.util.DateUtils
 import java.time.DayOfWeek
@@ -70,14 +76,24 @@ private enum class Scope { Week, Month, Year }
 fun InsightsScreen(
     modifier: Modifier = Modifier,
     onDayClick: (LocalDate) -> Unit = {},
+    onSignalAction: (com.daymark.app.stats.Signals.Action) -> Unit = {},
+    onReviewYear: (Int) -> Unit = {},
     statsViewModel: StatsViewModel = hiltViewModel(),
     calendarViewModel: CalendarViewModel = hiltViewModel(),
     yearViewModel: YearPixelsViewModel = hiltViewModel(),
+    extrasViewModel: InsightsExtrasViewModel = hiltViewModel(),
+    signalsViewModel: SignalsViewModel = hiltViewModel(),
 ) {
     val stats by statsViewModel.uiState.collectAsStateWithLifecycle()
     val calendar by calendarViewModel.uiState.collectAsStateWithLifecycle()
     val year by yearViewModel.uiState.collectAsStateWithLifecycle()
+    val extras by extrasViewModel.uiState.collectAsStateWithLifecycle()
+    val signals by signalsViewModel.signals.collectAsStateWithLifecycle()
+    var insightsDismissed by androidx.compose.runtime.saveable.rememberSaveable(
+        stateSaver = SignalDismissalSaver,
+    ) { mutableStateOf(emptySet<String>()) }
     var scope by remember { mutableStateOf(Scope.Month) }
+    var yearStars by remember { mutableStateOf(true) }
 
     if (stats.totalEntries == 0) {
         Box(modifier = modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -93,6 +109,17 @@ fun InsightsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // "For you" — the ranked Signals (rules-based, no AI), most relevant first. Skipped entirely
+        // (no empty slot/spacing) once every card has been dismissed.
+        if (visibleSignalCount(signals, com.daymark.app.stats.Signals.Surface.Insights, insightsDismissed) > 0) {
+            SignalCards(
+                signals = signals,
+                onAction = onSignalAction,
+                dismissed = insightsDismissed,
+                onDismiss = { insightsDismissed = insightsDismissed + it },
+            )
+        }
+
         // Time-scale toggle
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             Scope.entries.forEachIndexed { index, s ->
@@ -144,11 +171,29 @@ fun InsightsScreen(
                         onPrev = yearViewModel::previousYear,
                         onNext = yearViewModel::nextYear,
                     )
-                    YearInPixelsGrid(
-                        year = year.year,
-                        dayMoods = year.dayMoods,
-                        modifier = Modifier.padding(top = 8.dp),
+                    StarsGridToggle(
+                        starsSelected = yearStars,
+                        onSelect = { yearStars = it },
+                        modifier = Modifier.padding(bottom = 4.dp),
                     )
+                    if (yearStars) {
+                        YearInStarsGrid(
+                            year = year.year,
+                            dayMoods = year.dayMoods,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        StarsLegend(modifier = Modifier.padding(top = 8.dp))
+                    } else {
+                        YearInPixelsGrid(
+                            year = year.year,
+                            dayMoods = year.dayMoods,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                    Button(
+                        onClick = { onReviewYear(year.year) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    ) { Text("Review my year") }
                 }
             }
         }
@@ -168,6 +213,143 @@ fun InsightsScreen(
                 }
             }
         }
+
+        // --- Period in review + consistency ---
+        if (extras.review.isNotBlank()) {
+            SectionCard("In review") {
+                Text(extras.review, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        if (extras.entriesByDay.isNotEmpty()) {
+            SectionCard("Logging consistency") {
+                com.daymark.app.ui.components.ConsistencyHeatmap(extras.entriesByDay)
+            }
+        }
+
+        // --- Correlations & patterns (associations, not causes) ---
+        val periodCompare = when (scope) {
+            Scope.Week -> extras.weekCompare
+            Scope.Month -> extras.monthCompare
+            Scope.Year -> extras.yearCompare
+        }
+        periodCompare?.let { PeriodCompareCard(scope.name.lowercase(Locale.getDefault()), it) }
+
+        if (extras.topUp.isNotEmpty() || extras.topDown.isNotEmpty()) {
+            SectionCard("What goes with your mood") {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Things logged alongside higher or lower moods. This shows association, not cause.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (extras.topUp.isNotEmpty()) {
+                        FactorList("Lifts you up", extras.topUp, MaterialTheme.moodColors.forLevel(5))
+                    }
+                    if (extras.topDown.isNotEmpty()) {
+                        FactorList("Weighs you down", extras.topDown, MaterialTheme.moodColors.forLevel(1))
+                    }
+                    extras.trackerCorrelations.takeIf { it.isNotEmpty() }?.let { corrs ->
+                        Text("Trackers", style = MaterialTheme.typography.labelLarge)
+                        corrs.forEach { c ->
+                            val dir = if (c.r >= 0) "higher mood" else "lower mood"
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("${c.name} (${c.n}d)")
+                                Text("$dir  r=${String.format(Locale.getDefault(), "%+.2f", c.r)}")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (extras.dayOfWeek.isNotEmpty()) {
+            SectionCard("By day of week") {
+                LabeledMoodBars(
+                    DayOfWeek.entries.mapNotNull { dow ->
+                        extras.dayOfWeek[dow]?.let {
+                            dow.getDisplayName(java.time.format.TextStyle.SHORT, Locale.getDefault()) to it
+                        }
+                    },
+                )
+            }
+        }
+
+        if (extras.timeOfDay.isNotEmpty()) {
+            SectionCard("By time of day") {
+                LabeledMoodBars(
+                    com.daymark.app.stats.MoodPatterns.TimeBucket.entries.mapNotNull { b ->
+                        extras.timeOfDay[b]?.let { b.label to it }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PeriodCompareCard(periodName: String, c: com.daymark.app.stats.MoodPatterns.PeriodComparison) {
+    SectionCard("This $periodName vs last") {
+        val cur = c.currentAvg
+        if (cur == null) {
+            Text("Not enough entries yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return@SectionCard
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Avg mood ${String.format(Locale.getDefault(), "%.1f", cur)} (${c.currentCount} entries)")
+            c.deltaPct?.let { pct ->
+                val up = pct >= 0
+                Text(
+                    "${if (up) "▲" else "▼"} ${String.format(Locale.getDefault(), "%.0f", kotlin.math.abs(pct))}%",
+                    color = if (up) MaterialTheme.moodColors.forLevel(5) else MaterialTheme.moodColors.forLevel(2),
+                    fontWeight = FontWeight.SemiBold,
+                )
+            } ?: Text("—", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun FactorList(title: String, rows: List<FactorRow>, accent: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = accent)
+        rows.forEach { r ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("${r.name} (${r.n})")
+                Text(String.format(Locale.getDefault(), "%+.1f", r.delta), color = accent)
+            }
+        }
+    }
+}
+
+/** Simple horizontal bars for mood values on the 1–5 scale. */
+@Composable
+private fun LabeledMoodBars(values: List<Pair<String, Double>>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        values.forEach { (label, mood) ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(label, modifier = Modifier.width(40.dp), style = MaterialTheme.typography.bodySmall)
+                Box(Modifier.weight(1f).height(14.dp)) {
+                    val frac = ((mood - 1.0) / 4.0).toFloat().coerceIn(0.04f, 1f)
+                    Box(
+                        Modifier.fillMaxHeight().fillMaxWidth(frac).clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.moodColors.forLevel(mood.toInt().coerceIn(1, 5))),
+                    )
+                }
+                Text(String.format(Locale.getDefault(), "%.1f", mood), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** Compact toggle between the night-sky "Stars" view and the dense "Grid" view of the year. */
+@Composable
+private fun StarsGridToggle(starsSelected: Boolean, onSelect: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+    ) {
+        FilterChip(selected = starsSelected, onClick = { onSelect(true) }, label = { Text("Stars") })
+        FilterChip(selected = !starsSelected, onClick = { onSelect(false) }, label = { Text("Grid") })
     }
 }
 
@@ -236,7 +418,7 @@ private fun WeekBars(trend: List<Double?>, modifier: Modifier = Modifier) {
                     val frac = v?.let { ((it - 1.0) / 4.0).toFloat().coerceIn(0.06f, 1f) } ?: 0.05f
                     Box(
                         Modifier.fillMaxWidth().fillMaxHeight(frac).clip(RoundedCornerShape(6.dp))
-                            .background(v?.let { moodColor(it) } ?: MaterialTheme.colorScheme.surfaceVariant),
+                            .background(v?.let { moodColor(it, MaterialTheme.moodColors) } ?: MaterialTheme.colorScheme.surfaceVariant),
                     )
                 }
                 Text(
@@ -252,7 +434,7 @@ private fun WeekBars(trend: List<Double?>, modifier: Modifier = Modifier) {
 @Composable
 private fun DayCell(date: LocalDate, moodLevel: Double?, onClick: () -> Unit) {
     val hasMood = moodLevel != null
-    val fill = if (hasMood) moodColor(moodLevel!!) else MaterialTheme.colorScheme.surfaceVariant
+    val fill = if (hasMood) moodColor(moodLevel!!, MaterialTheme.moodColors) else MaterialTheme.colorScheme.surfaceVariant
     val isToday = date == LocalDate.now()
     val shape = RoundedCornerShape(11.dp)
     Box(
@@ -341,13 +523,14 @@ private fun MoodDistribution(counts: Map<Int, Int>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Mood.ascending.reversed().forEach { mood ->
             val count = counts[mood.level] ?: 0
+            val barColor = MaterialTheme.moodColors.forLevel(mood.level)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MoodFaceIcon(level = mood.level, size = 22.dp)
                 Box(modifier = Modifier.weight(1f).height(18.dp)) {
                     Canvas(modifier = Modifier.fillMaxWidth().height(18.dp)) {
                         val barWidth = size.width * (count.toFloat() / max)
                         drawRoundRect(
-                            color = mood.color,
+                            color = barColor,
                             size = Size(barWidth.coerceAtLeast(2f), size.height),
                             cornerRadius = CornerRadius(8f, 8f),
                         )
@@ -364,19 +547,19 @@ private fun MoodLegend(modifier: Modifier = Modifier) {
     Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
         Mood.ascending.forEach { mood ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(11.dp).clip(RoundedCornerShape(3.dp)).background(mood.color))
-                Text(" ${mood.label}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.size(11.dp).clip(RoundedCornerShape(3.dp)).background(MaterialTheme.moodColors.forLevel(mood.level)))
+                Text(" ${MaterialTheme.moodLabels.forLevel(mood.level)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
 }
 
-private fun moodColor(level: Double): Color {
+private fun moodColor(level: Double, colors: com.daymark.app.ui.theme.MoodColors): Color {
     val lower = level.toInt().coerceIn(1, 5)
     val upper = (lower + 1).coerceAtMost(5)
     val t = (level - lower).toFloat().coerceIn(0f, 1f)
-    val a = Mood.fromLevel(lower).color
-    val b = Mood.fromLevel(upper).color
+    val a = colors.forLevel(lower)
+    val b = colors.forLevel(upper)
     return Color(
         red = a.red + (b.red - a.red) * t,
         green = a.green + (b.green - a.green) * t,
